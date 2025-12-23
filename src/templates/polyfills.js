@@ -137,7 +137,7 @@ export const webAudioPolyfill = `
             console.log("[Audio] App visible, resuming...");
             if (unlocked) {
                 contexts.forEach(ctx => {
-                    if (ctx.state === 'suspended') ctx.resume().catch(() => {}));
+                    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
                 });
             }
         }
