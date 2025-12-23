@@ -71,37 +71,39 @@ export const webAudioPolyfill = `
             // Safe Decode: Catches malformed buffers (e.g. HTML 404s) preventing app crash
             decodeAudioData(buffer, successCallback, errorCallback) {
                 const isPromise = !successCallback && !errorCallback;
-                const self = this;
 
                 // 1. Validation: If buffer is bad/empty, fail gracefully immediately
                 if (!buffer || buffer.byteLength === 0) {
+                    console.warn("[Audio] Empty/Null buffer passed to decodeAudioData. Serving silence.");
                     const silent = createSilentBuffer(this);
                     if (successCallback) successCallback(silent);
                     return isPromise ? Promise.resolve(silent) : undefined;
                 }
 
                 // 2. Execute Decode
+                // We wrap the Promise result to catch errors even if callbacks are used (modern browsers return Promise + callbacks)
                 const promise = super.decodeAudioData(buffer, 
                     (decoded) => {
                         if (successCallback) successCallback(decoded);
                     },
                     (err) => {
-                        // Suppress "unknown content type" spam, it just means the asset is missing/bad.
-                        if (!err.message.includes('unknown content type')) {
-                             console.warn("[Audio] Decode Error:", err.message);
-                        }
-                        const silent = createSilentBuffer(self);
+                        console.warn("[Audio] Decode Error (callback):", err.message);
+                        // Serve silence instead of erroring
+                        const silent = createSilentBuffer(this);
                         if (successCallback) successCallback(silent);
+                        // We suppress the errorCallback to keep game running
                     }
                 );
 
-                // 3. Handle Promise Rejection
+                // 3. Handle Promise Rejection (Common in modern usage)
                 if (promise && promise.catch) {
                     return promise.catch(err => {
-                        if (!err.message.includes('unknown content type')) {
-                             console.warn("[Audio] Decode Error (promise):", err.message);
-                        }
-                        return createSilentBuffer(self);
+                        console.warn("[Audio] Decode Error (promise):", err.message);
+                        // Return silence
+                        const silent = createSilentBuffer(this);
+                        // If user provided a success callback, we already called it above in the error handler wrapper if supported,
+                        // but if they rely purely on promise:
+                        return silent;
                     });
                 }
                 

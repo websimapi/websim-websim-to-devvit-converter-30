@@ -3,7 +3,13 @@ import { simple as walkSimple } from 'https://esm.sh/acorn-walk@8.3.2';
 import MagicString from 'https://esm.sh/magic-string@0.30.5';
 
 // Helper: Clean Filename
-export const cleanName = (name) => name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+export const cleanName = (name) => {
+    const parts = name.toLowerCase().split('.');
+    const ext = parts.length > 1 ? parts.pop() : '';
+    const base = parts.join('.');
+    const cleanBase = base.replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+    return ext ? `${cleanBase}.${ext}` : cleanBase;
+};
 
 export function uint8ToString(u8) {
   if (typeof u8 === 'string') return u8;
@@ -18,6 +24,23 @@ export class AssetAnalyzer {
         this.dependencies = {};
         this.globalShims = new Set();
         this.hasTailwind = false;
+        this.urlMap = new Map();
+    }
+
+    setExternalMap(map) {
+        this.urlMap = map;
+    }
+
+    scanForAssets(content) {
+        const code = uint8ToString(content);
+        const urls = new Set();
+        // Look for URLs with media extensions in quotes
+        const regex = /["']((?:https?:)?\/\/[^"']+\.(mp3|wav|ogg|flac|aac|png|jpg|jpeg|gif|glb|gltf))["']/gi;
+        let match;
+        while ((match = regex.exec(code)) !== null) {
+            urls.add(match[1]);
+        }
+        return Array.from(urls);
     }
 
     // Detects libraries and converts CDN URLs to NPM package names
@@ -169,6 +192,18 @@ export class AssetAnalyzer {
             const rewritePaths = (node) => {
                 if (node.type === 'Literal' && typeof node.value === 'string') {
                     const val = node.value;
+
+                    // 1. Check URL Map (Exact Match for external or remapped assets)
+                    if (this.urlMap.has(val)) {
+                        const cleanName = this.urlMap.get(val);
+                        // Serve from root (public folder)
+                        const newVal = `/${cleanName}`; 
+                        magic.overwrite(node.start, node.end, JSON.stringify(newVal));
+                        hasChanges = true;
+                        return;
+                    }
+
+                    // 2. Handle standard local paths that weren't mapped
                     if (val.startsWith('/') && !val.startsWith('//') && /\.(png|jpg|jpeg|gif|mp3|wav|ogg|glb|gltf|svg|json)$/i.test(val)) {
                         const newVal = rootPrefix + val.substring(1);
                         magic.overwrite(node.start, node.end, JSON.stringify(newVal));
@@ -268,6 +303,15 @@ export class AssetAnalyzer {
     // Process HTML: Remove import maps, extract inline scripts, inject polyfills
     processHTML(htmlContent, filename) {
         let html = uint8ToString(htmlContent);
+
+        // Rewrite Mapped URLs in HTML
+        this.urlMap.forEach((cleanName, originalUrl) => {
+            // Replace instances of originalUrl with /cleanName
+            if (originalUrl && html.includes(originalUrl)) {
+                html = html.split(originalUrl).join(`/${cleanName}`);
+            }
+        });
+
         const extractedScripts = [];
         let scriptCounter = 0;
 

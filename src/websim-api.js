@@ -118,14 +118,11 @@ const EMPTY_PNG = new Uint8Array([
   0x42, 0x60, 0x82
 ]);
 
-// Robust Silence WAV (84 bytes, 20 samples) - Fixes "unknown content type" on empty buffers
+// Minimal Silence WAV (44 bytes)
 const EMPTY_WAV = new Uint8Array([
-  0x52, 0x49, 0x46, 0x46, 0x4C, 0x00, 0x00, 0x00, 0x57, 0x41, 0x56, 0x45, 0x66, 0x6d, 0x74, 0x20,
-  0x10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x44, 0xAC, 0x00, 0x00, 0x88, 0x58, 0x01, 0x00,
-  0x02, 0x00, 0x10, 0x00, 0x64, 0x61, 0x74, 0x61, 0x28, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+  0x52, 0x49, 0x46, 0x46, 0x24, 0x00, 0x00, 0x00, 0x57, 0x41, 0x56, 0x45, 0x66, 0x6d, 0x74, 0x20,
+  0x10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x44, 0xac, 0x00, 0x00, 0x88, 0x58, 0x01, 0x00,
+  0x02, 0x00, 0x10, 0x00, 0x64, 0x61, 0x74, 0x61, 0x00, 0x00, 0x00, 0x00
 ]);
 
 export async function processAssets(assetList) {
@@ -163,25 +160,21 @@ export async function processAssets(assetList) {
                 if (/\.(mp3|wav|ogg|glb|gltf|png|jpg|jpeg|gif)$/i.test(path)) {
                     // 1. Content-Type Check
                     const contentType = res.headers.get('content-type');
-                    if (contentType && (
-                        contentType.includes('text/html') || 
-                        contentType.includes('application/json') || 
-                        contentType.includes('application/xml') || 
-                        contentType.includes('text/xml')
-                    )) {
+                    // Some servers return text/plain for everything, so we trust signature more, 
+                    // but text/html is almost always wrong for these extensions.
+                    if (contentType && (contentType.includes('text/html') || contentType.includes('application/json'))) {
                         throw new Error(`Received invalid content-type: ${contentType}`);
                     }
 
-                    // 2. Sniff content for text/json/xml signatures
-                    const header = new Uint8Array(blob.slice(0, 100));
+                    // 2. Sniff content for text/json signatures
+                    const header = new Uint8Array(blob.slice(0, 100)); // Increased check size
                     const textHeader = new TextDecoder().decode(header).trim().toLowerCase();
                     
+                    // Check for common text file starts (case insensitive now)
                     if (textHeader.startsWith('<!doctype') || 
                         textHeader.startsWith('<html') || 
-                        textHeader.startsWith('<?xml') ||
-                        textHeader.startsWith('{') || 
+                        textHeader.startsWith('{') || // JSON start
                         textHeader.startsWith('error') ||
-                        textHeader.includes('<error>') ||
                         textHeader.includes('accessdenied') ||
                         textHeader.includes('nosuchkey') ||
                         textHeader.includes('cannot get') ||
@@ -190,22 +183,9 @@ export async function processAssets(assetList) {
                         textHeader.includes('404 not found')) {
                             throw new Error(`Content sniffer detected text/error signature: "${textHeader.substring(0, 15)}..."`);
                     }
-
-                    // 3. Magic Number Check for Audio (Strict Mode)
-                    if (/\.(wav|ogg|mp3)$/i.test(path)) {
-                         const h = header;
-                         let isValid = false;
-                         if (h[0]===0x52 && h[1]===0x49 && h[2]===0x46 && h[3]===0x46) isValid = true; // WAV (RIFF)
-                         else if (h[0]===0x4F && h[1]===0x67 && h[2]===0x67 && h[3]===0x53) isValid = true; // OGG (OggS)
-                         else if (h[0]===0x49 && h[1]===0x44 && h[2]===0x33) isValid = true; // MP3 (ID3)
-                         else if (h[0]===0xFF && (h[1] & 0xE0) === 0xE0) isValid = true; // MP3 (Sync)
-                         else if (blob.byteLength > 100) isValid = true; // Fallback for raw MP3s if text check passed
-                         
-                         if (!isValid) throw new Error("Invalid audio signature.");
-                    }
                     
-                    // 4. Size check
-                    if (blob.byteLength < 20) {
+                    // 3. Size check (too small = suspicious for media, unless it's pixel art/tiny sound)
+                    if (blob.byteLength < 5) {
                         throw new Error('Asset too small to be valid.');
                     }
                 }

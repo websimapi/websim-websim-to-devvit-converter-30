@@ -33,15 +33,104 @@ export async function generateDevvitZip(projectMeta, assets, includeReadme = tru
 
     // Initialize Analyzer
     const analyzer = new AssetAnalyzer();
-    const clientFiles = {};
+    
+    // Separation: Code vs Static Assets
+    const codeFiles = {};
+    const staticFiles = {}; // These go to src/client/public/
+    const urlMap = new Map(); // original -> clean filename
 
-    // 1. Process Assets
+    // 1. Initial Sort & Clean
     for (const [path, content] of Object.entries(assets)) {
         if (path.includes('..')) continue;
 
+        // Code Files
+        if (/\.(html|js|mjs|ts|jsx|tsx|css|json|txt|md)$/i.test(path)) {
+            codeFiles[path] = content;
+        } else {
+            // Static Assets (Images, Audio, Models)
+            const name = path.split('/').pop();
+            const clean = cleanName(name);
+            
+            // Avoid overwrite collision
+            let finalName = clean;
+            let counter = 1;
+            while (staticFiles[finalName]) {
+                const parts = clean.split('.');
+                const ext = parts.pop();
+                const base = parts.join('.');
+                finalName = `${base}_${counter}.${ext}`;
+                counter++;
+            }
+
+            staticFiles[finalName] = content;
+            
+            // Map common ways this file might be referenced
+            urlMap.set(path, finalName);           // "folder/song.mp3" -> "song.mp3"
+            urlMap.set('/' + path, finalName);     // "/folder/song.mp3" -> "song.mp3"
+            urlMap.set('./' + path, finalName);    // "./folder/song.mp3" -> "song.mp3"
+            urlMap.set(name, finalName);           // "song.mp3" -> "song.mp3"
+            urlMap.set('/' + name, finalName);     // "/song.mp3" -> "song.mp3"
+        }
+    }
+
+    // 2. Scan Code for External Audio/Images
+    const externalUrls = new Set();
+    for (const content of Object.values(codeFiles)) {
+        const found = analyzer.scanForAssets(content);
+        found.forEach(url => {
+            // Ignore if already mapped or looks local
+            if (!urlMap.has(url) && !url.startsWith('.') && !url.startsWith('/')) {
+                externalUrls.add(url);
+            }
+        });
+    }
+
+    // 3. Download External Assets
+    if (externalUrls.size > 0) {
+        const downloadPromises = Array.from(externalUrls).map(async (url) => {
+            try {
+                const res = await fetch(url);
+                if (!res.ok) return;
+                const blob = await res.arrayBuffer();
+
+                let name = url.split('/').pop().split('?')[0];
+                if (!name || name.length > 50) name = 'asset';
+                
+                if (!name.includes('.')) {
+                    const type = res.headers.get('content-type') || '';
+                    if (type.includes('audio')) name += '.mp3';
+                    else if (type.includes('image')) name += '.png';
+                }
+
+                const clean = cleanName(name);
+                let finalName = clean;
+                let counter = 1;
+                while (staticFiles[finalName]) {
+                    const parts = clean.split('.');
+                    const ext = parts.pop();
+                    const base = parts.join('.');
+                    finalName = `${base}_${counter}.${ext}`;
+                    counter++;
+                }
+
+                staticFiles[finalName] = new Uint8Array(blob);
+                urlMap.set(url, finalName);
+            } catch (e) {
+                console.warn("Failed to download external asset:", url);
+            }
+        });
+        
+        await Promise.all(downloadPromises);
+    }
+
+    analyzer.setExternalMap(urlMap);
+
+    // 4. Process Code Files
+    const clientFiles = {};
+    
+    for (const [path, content] of Object.entries(codeFiles)) {
         if (/\.(js|mjs|ts|jsx|tsx)$/i.test(path)) {
-            const processed = analyzer.processJS(content, path);
-            clientFiles[path] = processed;
+            clientFiles[path] = analyzer.processJS(content, path);
         } else if (path.endsWith('.html')) {
             const { html, extractedScripts } = analyzer.processHTML(content, path.split('/').pop());
             clientFiles[path] = html;
@@ -161,8 +250,18 @@ export default {
     
     clientFolder.file("vite.config.ts", generateClientViteConfig({ hasReact, hasRemotion }));
 
+    // Write processed code
     for (const [path, content] of Object.entries(clientFiles)) {
         clientFolder.file(path, content);
+    }
+
+    // Write static assets to src/client/public
+    // Vite will copy these to dist/client root
+    if (Object.keys(staticFiles).length > 0) {
+        const publicFolder = clientFolder.folder("public");
+        for (const [name, content] of Object.entries(staticFiles)) {
+            publicFolder.file(name, content);
+        }
     }
 
     // Polyfills in src/client
